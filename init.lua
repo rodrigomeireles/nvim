@@ -564,8 +564,8 @@ cmp.setup {
       entry_filter = function(entry, context)
         local suggestion_kind = cmp.lsp.CompletionItemKind[entry:get_kind()]
         local node = ts_utils.get_node_at_cursor()
-        vim.notify_once('Node atual: ' .. vim.inspect(node) .. ' Tipo de sugestão: ' .. suggestion_kind)
         if node and node:type() == 'argument_list' then
+          vim.lsp.buf.hover()
           if suggestion_kind == 'Variable' then
             return true
           else
@@ -581,7 +581,15 @@ cmp.setup {
 }
 
 
+
 vim.env.python3_host_prog = '/home/rmo/.pyenv/versions/nvim311/bin/python'
+vim.api.nvim_create_autocmd("BufWritePre", {
+  buffer = buffer,
+  callback = function()
+    vim.lsp.buf.format { async = false }
+  end
+})
+
 
 
 -- The line beneath this is called `modeline`. See `:help modeline`
