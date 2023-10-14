@@ -565,7 +565,6 @@ cmp.setup {
         local suggestion_kind = cmp.lsp.CompletionItemKind[entry:get_kind()]
         local node = ts_utils.get_node_at_cursor()
         if node and node:type() == 'argument_list' then
-          vim.lsp.buf.hover()
           if suggestion_kind == 'Variable' then
             return true
           else
