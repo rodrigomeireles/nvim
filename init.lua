@@ -42,7 +42,6 @@ P.S. You can delete this when you're done too. It's your config now :)
 --  NOTE: Must happen before plugins are required (otherwise wrong leader will be used)
 vim.g.mapleader = ' '
 vim.g.maplocalleader = ' '
-
 -- Install package manager
 --    https://github.com/folke/lazy.nvim
 --    `:help lazy.nvim.txt` for more info
@@ -205,6 +204,8 @@ require('lazy').setup({
       },
     },
   },
+
+  { 'echasnovski/mini.pairs', version = false, opts = {} },
 
   {
     -- Highlight, edit, and navigate code
