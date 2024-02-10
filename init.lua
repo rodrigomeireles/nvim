@@ -590,6 +590,28 @@ cmp.setup {
   },
 }
 
+local function open_messages_in_buffer()
+  -- Capture the output of :messages
+  local messages = vim.fn.execute("messages")
+
+  -- Create a new buffer
+  vim.cmd("new")
+
+  -- Set buffer options to make it a scratch buffer
+  vim.bo.buftype = 'nofile'
+  vim.bo.bufhidden = 'hide'
+  vim.bo.swapfile = false
+
+  -- Insert the messages into the new buffer
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, vim.split(messages, '\n'))
+
+  -- Optionally, set the buffer to read-only to prevent editing
+  vim.bo.readonly = true
+end
+
+-- Create a command to invoke the function
+vim.api.nvim_create_user_command('OpenMessages', open_messages_in_buffer, {})
+
 
 
 vim.env.python3_host_prog = '/home/rmo/.pyenv/versions/nvim311/bin/python'
