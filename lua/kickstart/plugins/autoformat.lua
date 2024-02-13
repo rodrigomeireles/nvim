@@ -50,6 +50,9 @@ return {
           return
         end
 
+        if (client.name == 'html' or client.name == 'htmx') and vim.bo[bufnr].filetype == 'templ' then
+          return
+        end
         -- Create an autocmd that will run *before* we save the buffer.
         --  Run the formatting command for the LSP that has just attached.
         vim.api.nvim_create_autocmd('BufWritePre', {
