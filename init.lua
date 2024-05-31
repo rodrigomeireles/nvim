@@ -76,6 +76,7 @@ require('lazy').setup({
   -- Git related plugins
   'tpope/vim-fugitive',
   'tpope/vim-rhubarb',
+  "nvim-neotest/nvim-nio",
 
   -- Detect tabstop and shiftwidth automatically
   'tpope/vim-sleuth',
@@ -494,12 +495,12 @@ require('mason-lspconfig').setup()
 --
 local servers = {
   -- clangd = {},
-  gopls = {},
-  templ = {},
+  -- gopls = {},
+  -- templ = {},
   -- pyright = {},
   rust_analyzer = {},
   -- tsserver = {},
-  htmx = { filetypes = { 'html', 'templ' } },
+  -- htmx = { filetypes = { 'html', 'templ' } },
   html = { filetypes = { 'html', 'twig', 'hbs', 'templ' } },
 
   lua_ls = {
