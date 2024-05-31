@@ -1,7 +1,7 @@
 --[[
 
 =====================================================================
-==================== READ THIS BEFORE CONTINUING ====================
+=================== READ THIS BEFORE CONTINUING ====================
 =====================================================================
 
 Kickstart.nvim is *not* a distribution.
@@ -219,6 +219,7 @@ require('lazy').setup({
     'nvim-treesitter/nvim-treesitter',
     dependencies = {
       'nvim-treesitter/nvim-treesitter-textobjects',
+      'nushell/tree-sitter-nu'
     },
     build = ':TSUpdate',
   },
@@ -234,6 +235,14 @@ require('lazy').setup({
     ft = { "markdown" },
     build = function() vim.fn["mkdp#util#install"]() end,
   },
+  {
+    'numToStr/Comment.nvim',
+    opts = {
+      -- add any options here
+    },
+    lazy = false,
+  },
+
 
 
   -- NOTE: The import below can automatically add your own plugins, configuration, etc from `lua/custom/plugins/*.lua`
@@ -351,10 +360,11 @@ vim.defer_fn(function()
   require('nvim-treesitter.configs').setup {
     -- Add languages to be installed here that you want installed for treesitter
     ensure_installed = { 'c', 'cpp', 'go', 'lua', 'python', 'rust', 'tsx', 'javascript', 'typescript', 'vimdoc', 'vim',
-      'bash', 'templ' },
+      'bash', 'templ', 'nu' },
 
     -- Autoinstall languages that are not installed. Defaults to false (but you can change for yourself!)
     auto_install = false,
+
 
     highlight = { enable = true },
     indent = { enable = true },
@@ -498,6 +508,7 @@ local servers = {
   templ = {},
   -- pyright = {},
   rust_analyzer = {},
+  tailwindcss = { filetypes = { 'templ', 'html' } },
   -- tsserver = {},
   htmx = { filetypes = { 'html', 'templ' } },
   html = { filetypes = { 'html', 'twig', 'hbs', 'templ' } },
@@ -512,6 +523,7 @@ local servers = {
 
 -- Setup neovim lua configuration
 require('neodev').setup()
+require('lspconfig').nushell.setup {}
 
 -- nvim-cmp supports additional completion capabilities, so broadcast that to servers
 local capabilities = vim.lsp.protocol.make_client_capabilities()
