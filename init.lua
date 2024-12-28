@@ -203,7 +203,6 @@ require('lazy').setup({
     'nvim-treesitter/nvim-treesitter',
     dependencies = {
       'nvim-treesitter/nvim-treesitter-textobjects',
-      'nushell/tree-sitter-nu'
     },
     build = ':TSUpdate',
   },
@@ -524,8 +523,6 @@ local servers = {
 
 -- Setup neovim lua configuration
 require('neodev').setup()
-require('lspconfig').nushell.setup {}
-
 
 -- nvim-cmp supports additional completion capabilities, so broadcast that to servers
 local capabilities = vim.lsp.protocol.make_client_capabilities()
