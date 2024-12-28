@@ -7,5 +7,7 @@ local function open_messages_in_buffer()
 	vim.api.nvim_buf_set_lines(0, 0, -1, false, vim.split(messages, '\n'))
 	vim.bo.readonly = true
 end
-vim.api.nvim_create_user_command('Messages', open_messages_in_buffer, {})
-return {}
+
+return {
+	vim.api.nvim_create_user_command('Messages', open_messages_in_buffer, {})
+}
