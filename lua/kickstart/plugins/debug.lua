@@ -25,6 +25,7 @@ return {
     local dap = require 'dap'
     local dapui = require 'dapui'
 
+    require("dap-python").setup("uv")
     require('mason-nvim-dap').setup {
       -- Makes a best effort to setup the various debuggers with
       -- reasonable debug configurations
@@ -39,24 +40,13 @@ return {
           -- Keep original functionality
           require('mason-nvim-dap').default_setup(config)
         end,
-        python = function(config)
-          config.adapters = {
-            type = "executable",
-            command = "python",
-            args = {
-              '-m',
-              "debugpy.adapter"
-            }
-          }
-          require("mason-nvim-dap").default_setup(config)
-        end
       },
 
       -- You'll need to check that you have the required things installed
       -- online, please don't ask me how to install them :)
       ensure_installed = {
         -- Update this to ensure that you have the debuggers for the langs you want
-        'python'
+        -- 'python'
       },
     }
 
