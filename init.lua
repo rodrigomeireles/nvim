@@ -511,7 +511,11 @@ require('mason-lspconfig').setup()
 local servers = {
   -- clangd = {},
   gopls = {
-    usePlaceholders = true,
+    -- gopls reads its options from the `gopls` settings section, so the
+    -- table must be nested (mirrors lua_ls/pyright using `Lua`/`python`).
+    gopls = {
+      usePlaceholders = true,
+    },
   },
   -- templ = {},
   ruff = {},
