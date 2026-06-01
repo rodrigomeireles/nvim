@@ -217,6 +217,9 @@ require('lazy').setup({
     cmd = { "MarkdownPreviewToggle", "MarkdownPreview", "MarkdownPreviewStop" },
     ft = { "markdown" },
     build = function() vim.fn["mkdp#util#install"]() end,
+    init = function()
+      vim.g.mkdp_markdown_css = vim.fn.stdpath("config") .. "/markdown-preview.css"
+    end,
   },
   {
     'numToStr/Comment.nvim',
@@ -293,6 +296,12 @@ vim.o.completeopt = 'menuone,noselect'
 vim.o.termguicolors = true
 
 vim.o.rnu = true
+
+-- [[ Folding ]]
+-- Treesitter-based folding; start with everything open
+vim.o.foldmethod = 'expr'
+vim.o.foldexpr = 'nvim_treesitter#foldexpr()'
+vim.o.foldlevelstart = 99
 
 -- [[ Basic Keymaps ]]
 
@@ -506,7 +515,13 @@ local servers = {
   },
   -- templ = {},
   ruff = {},
-  -- pyright = {},
+  pyright = {
+    python = {
+      venvPath = '.',
+      venv = '.venv',
+      pythonPath = '.venv/bin/python',
+    },
+  },
   -- rust_analyzer = {},
   tailwindcss = { filetypes = { 'templ', 'html', 'tsx', 'typescriptreact', 'typescript' } },
   denols = { filetypes = { 'tsx', 'typescriptreact', 'typescript' } },
