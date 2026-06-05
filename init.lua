@@ -184,7 +184,10 @@ require('lazy').setup({
   -- Fuzzy Finder (files, lsp, etc)
   {
     'nvim-telescope/telescope.nvim',
-    branch = '0.1.x',
+    -- master, not 0.1.x: the 0.1.x release line predates nvim-treesitter `main`
+    -- and crashes in the previewer (ts_parsers.ft_to_lang removed). master uses
+    -- native vim.treesitter.
+    branch = 'master',
     dependencies = {
       'nvim-lua/plenary.nvim',
       -- Fuzzy Finder Algorithm which requires local dependencies to be built.
@@ -324,11 +327,11 @@ vim.keymap.set('n', 'k', "v:count == 0 ? 'gk' : 'k'", { expr = true, silent = tr
 vim.keymap.set('n', 'j', "v:count == 0 ? 'gj' : 'j'", { expr = true, silent = true })
 
 -- [[ Highlight on yank ]]
--- See `:help vim.highlight.on_yank()`
+-- See `:help vim.hl.on_yank()`
 local highlight_group = vim.api.nvim_create_augroup('YankHighlight', { clear = true })
 vim.api.nvim_create_autocmd('TextYankPost', {
   callback = function()
-    vim.highlight.on_yank()
+    vim.hl.on_yank()
   end,
   group = highlight_group,
   pattern = '*',
@@ -444,6 +447,81 @@ vim.keymap.set('n', '<leader>q', vim.diagnostic.setloclist, { desc = 'Open diagn
 
 -- [[ Configure LSP ]]
 --  This function gets run when an LSP connects to a particular buffer.
+-- PyTorch (and other C-extension libs) inject their real docstrings at RUNTIME,
+-- so a static server like pyright only sees the patchy `.pyi` stubs: tensor
+-- methods usually carry just ``See `torch.foo` `` and some have no body at all.
+-- `smart_hover` does a normal LSP hover, but when it spots that degraded stub doc
+-- it redirects to the real runtime doc via `python -m pydoc`, run through the
+-- project's own interpreter (so torch is importable).
+local function project_python(bufnr)
+  for _, c in ipairs(vim.lsp.get_clients { bufnr = bufnr, name = 'pyright' }) do
+    local pp = vim.tbl_get(c, 'config', 'settings', 'python', 'pythonPath')
+    if pp then
+      local root = c.config.root_dir or vim.fn.getcwd()
+      local abs = pp:sub(1, 1) == '/' and pp or (root .. '/' .. pp)
+      if vim.fn.executable(abs) == 1 then
+        return abs
+      end
+    end
+  end
+  local venv = vim.fn.getcwd() .. '/.venv/bin/python'
+  return vim.fn.executable(venv) == 1 and venv or 'python3'
+end
+
+local function pydoc_float(symbol, py)
+  local out = vim.fn.systemlist { py, '-m', 'pydoc', symbol }
+  if vim.v.shell_error ~= 0 or #out == 0 or (out[1] or ''):match 'No Python documentation found' then
+    return false
+  end
+  vim.lsp.util.open_floating_preview(out, '', {
+    border = 'rounded',
+    title = ' pydoc: ' .. symbol .. ' ',
+    max_width = 100,
+    max_height = 30,
+    focus_id = 'pydoc', -- press K again to jump into the float and scroll
+    wrap = true,
+  })
+  return true
+end
+
+local function smart_hover()
+  if vim.bo.filetype ~= 'python' then
+    return vim.lsp.buf.hover()
+  end
+  local bufnr = vim.api.nvim_get_current_buf()
+  local pos = vim.api.nvim_win_get_cursor(0)
+  local params = {
+    textDocument = { uri = vim.uri_from_bufnr(bufnr) },
+    position = { line = pos[1] - 1, character = pos[2] },
+  }
+  local responses = vim.lsp.buf_request_sync(bufnr, 'textDocument/hover', params, 1000) or {}
+  local md = ''
+  for _, r in pairs(responses) do
+    local contents = r.result and r.result.contents
+    if contents then
+      md = type(contents) == 'table' and (contents.value or '') or tostring(contents)
+      if #md > 0 then
+        break
+      end
+    end
+  end
+
+  -- 1) stub redirect: ``See `torch.squeeze` `` -> pydoc the free fn (the one with the real doc)
+  local target = md:match 'See%s+`(torch%.[%w_%.]+)`' or md:match 'See%s+:func:`(torch%.[%w_%.]+)`'
+  -- 2) a torch-qualified symbol typed in the source, e.g. hovering `torch.where`
+  if not target then
+    local cexpr = vim.fn.expand '<cexpr>'
+    if cexpr:match '^torch%.[%w_%.]+$' then
+      target = cexpr
+    end
+  end
+
+  if target and pydoc_float(target, project_python(bufnr)) then
+    return
+  end
+  vim.lsp.buf.hover() -- nothing better to offer -> normal LSP float
+end
+
 local on_attach = function(_, bufnr)
   -- NOTE: Remember that lua is a real programming language, and as such it is possible
   -- to define small helper and utility functions so you don't have to repeat yourself
@@ -472,7 +550,7 @@ local on_attach = function(_, bufnr)
   nmap('<leader>ws', require('telescope.builtin').lsp_dynamic_workspace_symbols, '[W]orkspace [S]ymbols')
 
   -- See `:help K` for why this keymap
-  nmap('K', vim.lsp.buf.hover, 'Hover Documentation')
+  nmap('K', smart_hover, 'Hover Documentation (pydoc fallback for torch)')
   nmap('<C-k>', vim.lsp.buf.signature_help, 'Signature Documentation')
 
   -- Lesser used LSP functionality
