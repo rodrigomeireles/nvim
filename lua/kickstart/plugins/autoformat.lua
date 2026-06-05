@@ -44,9 +44,9 @@ return {
           return
         end
 
-        -- Tsserver usually works poorly. Sorry you work with bad languages
-        -- You can remove this line if you know what you're doing :)
-        if client.name == 'tsserver' then
+        -- tsserver (here via typescript-tools.nvim) formats poorly; skip it.
+        -- Remove this if you want format-on-save from the TS language server.
+        if client.name == 'tsserver' or client.name == 'typescript-tools' then
           return
         end
 
