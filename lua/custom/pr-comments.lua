@@ -240,8 +240,25 @@ local function open_at(e)
   vim.cmd 'normal! zz'
 end
 
--- octo fills the PR buffer asynchronously, so poll until its comments render,
--- then use octo's own navigate_to_comment (matches by node id or numeric id).
+-- octo populates commentsMetadata BEFORE it places the comment extmarks, and its
+-- navigate_to_comment does `mark[1] + 1`, which throws when the extmark isn't
+-- placed yet. So poll until the target comment's extmark actually resolves, then
+-- jump. Match by node id (always present, unique) rather than databaseId: octo's
+-- matcher would spuriously hit the first review comment when databaseId is nil
+-- (nil == nil), so we also force a non-nil databaseId sentinel in the call.
+local function located(b, node_id, databaseId)
+  local ns = require('octo.constants').OCTO_COMMENT_NS
+  for _, c in ipairs(b.commentsMetadata or {}) do
+    if (node_id ~= nil and c.id == node_id) or (databaseId ~= nil and c.databaseId == databaseId) then
+      if not c.extmark then
+        return false
+      end
+      return vim.api.nvim_buf_get_extmark_by_id(b.bufnr, ns, c.extmark, {})[1] ~= nil
+    end
+  end
+  return false
+end
+
 local function navigate_when_ready(node_id, databaseId)
   local octo_utils = require 'octo.utils'
   local timer = assert(vim.uv.new_timer())
@@ -249,11 +266,13 @@ local function navigate_when_ready(node_id, databaseId)
   timer:start(80, 120, vim.schedule_wrap(function()
     tries = tries + 1
     local b = octo_utils.get_current_buffer()
-    if b and b.commentsMetadata and #b.commentsMetadata > 0 then
+    if b and located(b, node_id, databaseId) then
       timer:stop()
       timer:close()
-      b:navigate_to_comment { id = node_id, databaseId = databaseId }
-    elseif tries >= 80 then -- ~10s
+      pcall(function()
+        b:navigate_to_comment { id = node_id, databaseId = databaseId or -1 }
+      end)
+    elseif tries >= 100 then -- ~12s
       timer:stop()
       timer:close()
       notify('opened the PR but could not locate the comment', vim.log.levels.WARN)
@@ -295,10 +314,11 @@ local function previewer()
   }
 end
 
+--- @param hints string key tips shown on the prompt border (bottom of the picker)
 --- @param extra table[] list of { lhs, fn, keep? } -- mapped in BOTH insert and
 ---        normal mode (telescope's <Esc> closes the picker, so normal-mode-only
 ---        maps are unreachable). keep=true leaves the picker open after the action.
-local function pick(title, entries, on_default, extra)
+local function pick(title, hints, entries, on_default, extra)
   local pickers = require 'telescope.pickers'
   local finders = require 'telescope.finders'
   local conf = require('telescope.config').values
@@ -307,7 +327,8 @@ local function pick(title, entries, on_default, extra)
 
   pickers
     .new({}, {
-      prompt_title = title,
+      results_title = title, -- name (top); default layout puts the prompt at the bottom
+      prompt_title = hints, -- key tips render on the prompt border (bottom)
       finder = finders.new_table {
         results = entries,
         entry_maker = function(e)
@@ -357,7 +378,7 @@ function M.list()
   current_pr(function(pr)
     fetch(pr, function(comments)
       current_repo(function(slug)
-        pick('PR #' .. pr.number .. ' comments', comments, open_in_pr, {
+        pick('PR #' .. pr.number .. ' comments', '<CR> open in PR · <C-o> file · <C-y> pin', comments, open_in_pr, {
           {
             lhs = '<C-y>',
             keep = true,
@@ -402,7 +423,7 @@ function M.pins()
     if vim.tbl_isempty(pins) then
       return notify('no pinned comments for ' .. slug)
     end
-    pick('Pinned comments (' .. slug .. ')', pins, open_in_pr, {
+    pick('Pinned comments (' .. slug .. ')', '<CR> open in PR · <C-o> file · <C-d> unpin', pins, open_in_pr, {
       { lhs = '<C-o>', fn = open_at },
       {
         lhs = '<C-d>',
