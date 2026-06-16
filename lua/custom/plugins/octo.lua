@@ -17,9 +17,20 @@ return {
     mappings = {
       -- octo deep-merges mappings over its defaults, so these partial overrides
       -- keep every other default (react/reply/resolve, ]t/[t, etc.) intact.
-      -- Open the file a review comment refers to with `gx` (default is `gf`).
+      --
+      -- `gx`: open the file a review comment refers to (default is `gf`).
+      -- `gb`: open in browser. octo defaults this to <C-b>, which shadows Vim's
+      --       native scroll-back in its buffers; moving it frees <C-b>.
       review_diff = { goto_file = { lhs = 'gx', desc = 'go to file' } },
-      pull_request = { goto_file = { lhs = 'gx', desc = 'go to file' } },
+      pull_request = {
+        goto_file = { lhs = 'gx', desc = 'go to file' },
+        open_in_browser = { lhs = 'gb', desc = 'open PR in browser' },
+      },
+      issue = { open_in_browser = { lhs = 'gb', desc = 'open issue in browser' } },
+      discussion = { open_in_browser = { lhs = 'gb', desc = 'open discussion in browser' } },
+      repo = { open_in_browser = { lhs = 'gb', desc = 'open repo in browser' } },
+      release = { open_in_browser = { lhs = 'gb', desc = 'open release in browser' } },
+      runs = { open_in_browser = { lhs = 'gb', desc = 'open workflow run in browser' } },
     },
   },
   config = function(_, opts)
