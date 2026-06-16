@@ -49,10 +49,22 @@ return {
     vim.api.nvim_create_user_command('PrComments', pr 'list', { desc = 'List current PR comments' })
     vim.api.nvim_create_user_command('PrPins', pr 'pins', { desc = 'List pinned PR comments' })
 
-    vim.keymap.set('n', '<leader>pc', pr 'list', { desc = 'PR: [c]omments' })
-    vim.keymap.set('n', '<leader>pp', pr 'pins', { desc = 'PR: [p]inned comments' })
+    -- Global (work from anywhere; the comment list also detects the PR from an
+    -- octo buffer, so it works even when you aren't on the PR's branch).
+    vim.keymap.set('n', '<leader>pc', pr 'list', { desc = 'PR: list [c]omments' })
+    vim.keymap.set('n', '<leader>pl', pr 'pins', { desc = 'PR: [l]ist pinned' })
     vim.keymap.set('n', '<leader>po', '<cmd>Octo pr list<cr>', { desc = 'PR: [o]cto pr list' })
     vim.keymap.set('n', '<leader>pr', '<cmd>Octo review start<cr>', { desc = 'PR: start [r]eview' })
+
+    -- Inside octo buffers: pin / unpin the comment under the cursor.
+    vim.api.nvim_create_autocmd('FileType', {
+      pattern = 'octo',
+      desc = 'PR pin/unpin maps in octo buffers',
+      callback = function(ev)
+        vim.keymap.set('n', '<leader>pp', pr 'pin_at_cursor', { buffer = ev.buf, desc = 'PR: [p]in comment under cursor' })
+        vim.keymap.set('n', '<leader>pP', pr 'unpin_at_cursor', { buffer = ev.buf, desc = 'PR: un[P]in comment under cursor' })
+      end,
+    })
 
     pcall(function()
       require('which-key').add { { '<leader>p', group = '[P]R/Octo' } }

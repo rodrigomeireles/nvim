@@ -1,7 +1,7 @@
--- Thin layer over the `gh` CLI for the two things octo.nvim doesn't do:
---   * a flat Telescope picker of every review comment on the current PR
---   * pinning a comment to revisit later ("what am I working on right now")
--- octo handles the rest (review diff, react/reply/resolve, gx-to-file).
+-- Thin layer over the `gh` CLI + octo.nvim for two things octo doesn't do:
+--   * a flat picker of every comment on the current PR (review + conversation)
+--   * pinning a comment to revisit later ("what am I working on right now"),
+--     including the comment under the cursor inside an octo PR buffer.
 --
 -- Commands/keymaps are registered in lua/custom/plugins/octo.lua; this module is
 -- required lazily the first time one of them fires.
@@ -33,75 +33,133 @@ local function resolve(path)
   return nil
 end
 
+----------------------------------------------------------- octo buffer access
+-- If the current buffer is an octo PR buffer, describe it without touching gh.
+-- Returns { number, owner, repo, url } or nil.
+local function pr_from_octo_buffer()
+  local ok, octo_utils = pcall(require, 'octo.utils')
+  if not ok then
+    return nil
+  end
+  local b = octo_utils.get_current_buffer()
+  if not b or not b.number or not b.repo then
+    return nil
+  end
+  if b.kind ~= 'pull' and b.kind ~= 'reviewthread' then
+    return nil
+  end
+  local owner, repo = tostring(b.repo):match '([^/]+)/(.+)'
+  return { number = b.number, owner = owner, repo = repo, url = b.node and b.node.url }
+end
+
+-- The comment under the cursor in an octo buffer, normalized to a pin entry.
+-- Returns entry or nil (+ notifies why). `path`/`line` only for review comments.
+local function comment_at_cursor()
+  local ok, octo_utils = pcall(require, 'octo.utils')
+  if not ok then
+    notify('octo is not available', vim.log.levels.WARN)
+    return nil
+  end
+  local b = octo_utils.get_current_buffer()
+  if not b then
+    notify('not in an octo buffer', vim.log.levels.WARN)
+    return nil
+  end
+  local comment = b.get_comment_at_cursor and b:get_comment_at_cursor()
+  if not comment then
+    notify('put the cursor on a comment first', vim.log.levels.WARN)
+    return nil
+  end
+  local thread = b.get_thread_at_cursor and b:get_thread_at_cursor() or nil
+  local path = comment.path or (thread and thread.path)
+  local line = comment.snippetStartLine or (thread and thread.line)
+  return {
+    body = comment.body or '',
+    path = path,
+    line = path and (line or 1) or nil,
+    user = (comment.author ~= nil and comment.author ~= '') and comment.author or nil,
+    url = b.node and b.node.url, -- PR url (octo metadata lacks a per-comment url)
+    pr = b.number,
+    repo = b.repo,
+  }
+end
+
 ------------------------------------------------------------------- gh queries
--- `gh repo view` works in any clone (no PR needed) -> "owner/repo".
-local function repo_slug(cb)
-  vim.system({ 'gh', 'repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner' }, { text = true }, function(res)
+local function gh_json(args, cb)
+  vim.system(vim.list_extend({ 'gh' }, args), { text = true }, function(res)
     if res.code ~= 0 then
       return vim.schedule(function()
-        notify('not a GitHub repo: ' .. trim(res.stderr), vim.log.levels.WARN)
+        cb(nil, trim(res.stderr))
       end)
     end
-    local slug = trim(res.stdout)
+    local ok, data = pcall(vim.json.decode, res.stdout)
     vim.schedule(function()
-      cb(slug)
+      cb((ok and type(data) == 'table') and data or nil)
     end)
   end)
 end
 
--- The PR associated with the current branch.
+-- Resolve the PR for the comment list: prefer the octo buffer, else the branch.
 local function current_pr(cb)
-  vim.system({ 'gh', 'pr', 'view', '--json', 'number,url' }, { text = true }, function(res)
-    if res.code ~= 0 then
-      return vim.schedule(function()
-        notify('no open PR for the current branch', vim.log.levels.WARN)
-      end)
-    end
-    local ok, data = pcall(vim.json.decode, res.stdout)
-    if not ok or type(data) ~= 'table' or not data.number then
-      return vim.schedule(function()
-        notify('could not parse PR info from gh', vim.log.levels.ERROR)
-      end)
+  local from_buf = pr_from_octo_buffer()
+  if from_buf and from_buf.owner then
+    return cb(from_buf)
+  end
+  gh_json({ 'pr', 'view', '--json', 'number,url' }, function(data, err)
+    if not data or not data.number then
+      return notify('no open PR here (' .. (err or 'and not in a PR buffer') .. ')', vim.log.levels.WARN)
     end
     local owner, repo = tostring(data.url):match '://[^/]+/([^/]+)/([^/]+)/pull/'
-    vim.schedule(function()
-      cb { number = data.number, owner = owner, repo = repo, url = data.url }
-    end)
+    cb { number = data.number, owner = owner, repo = repo, url = data.url }
   end)
 end
 
--- Review (file-anchored) comments. `gh api --paginate` merges array pages into a
--- single flat JSON array, so one decode is enough.
+-- The repo slug for the pin store: octo buffer first, else gh.
+local function current_repo(cb)
+  local from_buf = pr_from_octo_buffer()
+  if from_buf and from_buf.owner then
+    return cb(from_buf.owner .. '/' .. from_buf.repo)
+  end
+  gh_json({ 'repo', 'view', '--json', 'nameWithOwner' }, function(data, err)
+    if not data or not data.nameWithOwner then
+      return notify('not a GitHub repo (' .. (err or '?') .. ')', vim.log.levels.WARN)
+    end
+    cb(data.nameWithOwner)
+  end)
+end
+
+-- All comments on the PR: review (file-anchored) + conversation (issue) comments.
 local function fetch(pr, cb)
   if not (pr.owner and pr.repo) then
-    return notify('could not determine owner/repo from PR url', vim.log.levels.ERROR)
+    return notify('could not determine owner/repo', vim.log.levels.ERROR)
   end
-  local path = string.format('repos/%s/%s/pulls/%d/comments', pr.owner, pr.repo, pr.number)
-  vim.system({ 'gh', 'api', path, '--paginate' }, { text = true }, function(res)
-    if res.code ~= 0 then
-      return vim.schedule(function()
-        notify('gh api failed: ' .. trim(res.stderr), vim.log.levels.ERROR)
-      end)
-    end
-    local ok, data = pcall(vim.json.decode, res.stdout)
-    if not ok or type(data) ~= 'table' then
-      return vim.schedule(function()
-        notify('could not parse comments JSON', vim.log.levels.ERROR)
-      end)
-    end
-    local out = {}
-    for _, c in ipairs(data) do
-      out[#out + 1] = {
-        path = c.path,
-        -- `line` is null on comments anchored to an outdated diff.
-        line = c.line or c.original_line or c.original_start_line or 1,
-        body = c.body or '',
-        user = (c.user and c.user.login) or '?',
-        url = c.html_url,
-        diff_hunk = c.diff_hunk,
-      }
-    end
-    vim.schedule(function()
+  local base = string.format('repos/%s/%s', pr.owner, pr.repo)
+  gh_json({ 'api', base .. '/pulls/' .. pr.number .. '/comments', '--paginate' }, function(review)
+    gh_json({ 'api', base .. '/issues/' .. pr.number .. '/comments', '--paginate' }, function(conv)
+      local out = {}
+      for _, c in ipairs(review or {}) do
+        out[#out + 1] = {
+          path = c.path,
+          line = c.line or c.original_line or c.original_start_line or 1,
+          body = c.body or '',
+          user = (c.user and c.user.login) or '?',
+          url = c.html_url,
+          diff_hunk = c.diff_hunk,
+          pr = pr.number,
+        }
+      end
+      for _, c in ipairs(conv or {}) do
+        out[#out + 1] = {
+          path = nil, -- conversation comment: no file/line
+          body = c.body or '',
+          user = (c.user and c.user.login) or '?',
+          url = c.html_url,
+          pr = pr.number,
+        }
+      end
+      if vim.tbl_isempty(out) then
+        return notify('PR #' .. pr.number .. ' has no comments')
+      end
       cb(out)
     end)
   end)
@@ -130,22 +188,56 @@ local function save_pins(slug, pins)
   vim.fn.writefile({ vim.json.encode(pins) }, pin_file(slug))
 end
 
---------------------------------------------------------------- shared actions
-local function open_at(e)
-  local p = resolve(e.path)
-  if not p then
-    return notify('file not found locally: ' .. (e.path or '?') .. '  (run :Octo pr checkout)', vim.log.levels.WARN)
-  end
-  vim.cmd.edit(vim.fn.fnameescape(p))
-  pcall(vim.api.nvim_win_set_cursor, 0, { e.line or 1, 0 })
-  vim.cmd 'normal! zz'
+-- Stable-ish identity for dedupe/removal: url, else path:line, else body.
+local function pin_key(p)
+  return p.url or (p.path and (p.path .. ':' .. tostring(p.line))) or p.body
 end
 
+local function add_pin(slug, entry)
+  local pins = load_pins(slug)
+  for _, p in ipairs(pins) do
+    if pin_key(p) == pin_key(entry) then
+      return false
+    end
+  end
+  pins[#pins + 1] = entry
+  save_pins(slug, pins)
+  return true
+end
+
+local function remove_pin(slug, entry)
+  local kept, removed = {}, false
+  for _, p in ipairs(load_pins(slug)) do
+    if pin_key(p) == pin_key(entry) then
+      removed = true
+    else
+      kept[#kept + 1] = p
+    end
+  end
+  save_pins(slug, kept)
+  return removed
+end
+
+--------------------------------------------------------------- shared actions
 local function open_thread(e)
   if not e.url then
     return notify('comment has no url', vim.log.levels.WARN)
   end
   vim.cmd('Octo ' .. e.url) -- loads octo on demand; opens the PR/thread context
+end
+
+-- Jump to the code a comment refers to; conversation comments fall back to octo.
+local function open_at(e)
+  if not e.path then
+    return open_thread(e)
+  end
+  local p = resolve(e.path)
+  if not p then
+    return notify('file not found locally: ' .. e.path .. '  (run :Octo pr checkout)', vim.log.levels.WARN)
+  end
+  vim.cmd.edit(vim.fn.fnameescape(p))
+  pcall(vim.api.nvim_win_set_cursor, 0, { e.line or 1, 0 })
+  vim.cmd 'normal! zz'
 end
 
 ------------------------------------------------------------- telescope picker
@@ -155,7 +247,8 @@ local function previewer()
     title = 'Comment',
     define_preview = function(self, entry)
       local e = entry.value
-      local lines = { string.format('@%s  %s:%d', e.user or '?', e.path or '?', e.line or 0), '' }
+      local loc = e.path and (e.path .. ':' .. (e.line or 0)) or '(conversation)'
+      local lines = { string.format('@%s  %s', e.user or '?', loc), '' }
       vim.list_extend(lines, vim.split(e.body or '', '\n', { plain = true }))
       if e.diff_hunk and e.diff_hunk ~= '' then
         lines[#lines + 1] = ''
@@ -169,11 +262,10 @@ local function previewer()
   }
 end
 
---- @param extra table[] list of { lhs, fn } -- normal-mode secondary actions
+--- @param extra table[] list of { lhs, fn, keep? } -- mapped in BOTH insert and
+---        normal mode (telescope's <Esc> closes the picker, so normal-mode-only
+---        maps are unreachable). keep=true leaves the picker open after the action.
 local function pick(title, entries, on_default, extra)
-  if vim.tbl_isempty(entries) then
-    return notify(title .. ': nothing to show')
-  end
   local pickers = require 'telescope.pickers'
   local finders = require 'telescope.finders'
   local conf = require('telescope.config').values
@@ -186,11 +278,12 @@ local function pick(title, entries, on_default, extra)
       finder = finders.new_table {
         results = entries,
         entry_maker = function(e)
+          local loc = e.path and (e.path .. ':' .. (e.line or 0)) or '(conversation)'
           local body = (e.body or ''):gsub('%s+', ' ')
           if #body > 60 then
             body = body:sub(1, 60) .. '…'
           end
-          local display = string.format('%s:%d  @%s  %s', e.path or '?', e.line or 0, e.user or '?', body)
+          local display = string.format('%s  @%s  %s', loc, e.user or '?', body)
           return { value = e, display = display, ordinal = display }
         end,
       },
@@ -205,12 +298,18 @@ local function pick(title, entries, on_default, extra)
           end
         end)
         for _, m in ipairs(extra or {}) do
-          map('n', m.lhs, function()
+          local handler = function()
             local sel = state.get_selected_entry()
-            if sel then
-              m.fn(sel.value, bufnr)
+            if not sel then
+              return
             end
-          end)
+            if not m.keep then
+              actions.close(bufnr)
+            end
+            m.fn(sel.value, bufnr)
+          end
+          map('i', m.lhs, handler)
+          map('n', m.lhs, handler)
         end
         return true
       end,
@@ -219,70 +318,66 @@ local function pick(title, entries, on_default, extra)
 end
 
 ------------------------------------------------------------------- public API
--- List every review comment on the current PR.
--- <CR> open file at line · p pin · o open thread in octo
+-- List every comment on the current PR (review + conversation).
+-- <CR> open file/thread · <C-y> pin · <C-o> open thread
 function M.list()
   current_pr(function(pr)
     fetch(pr, function(comments)
-      local actions = require 'telescope.actions'
-      pick('PR #' .. pr.number .. ' comments', comments, open_at, {
-        {
-          lhs = 'p',
-          fn = function(e)
-            M._pin(pr, e)
-          end,
-        },
-        {
-          lhs = 'o',
-          fn = function(e, b)
-            actions.close(b)
-            open_thread(e)
-          end,
-        },
-      })
+      current_repo(function(slug)
+        pick('PR #' .. pr.number .. ' comments', comments, open_at, {
+          {
+            lhs = '<C-y>',
+            keep = true,
+            fn = function(e)
+              notify(add_pin(slug, e) and ('pinned ' .. (e.path and (e.path .. ':' .. e.line) or 'comment')) or 'already pinned')
+            end,
+          },
+          { lhs = '<C-o>', fn = open_thread },
+        })
+      end)
     end)
   end)
 end
 
-function M._pin(pr, e)
-  local slug = pr.owner .. '/' .. pr.repo
-  local pins = load_pins(slug)
-  for _, p in ipairs(pins) do
-    if p.url == e.url then
-      return notify 'already pinned'
-    end
+-- Pin / unpin the comment under the cursor (octo buffer only).
+function M.pin_at_cursor()
+  local e = comment_at_cursor()
+  if not e then
+    return
   end
-  pins[#pins + 1] =
-    { path = e.path, line = e.line, body = e.body, user = e.user, url = e.url, pr = pr.number, diff_hunk = e.diff_hunk }
-  save_pins(slug, pins)
-  notify('pinned ' .. (e.path or '?') .. ':' .. (e.line or 0))
+  local slug = e.repo
+  if add_pin(slug, e) then
+    notify('pinned ' .. (e.path and (e.path .. ':' .. e.line) or 'conversation comment'))
+  else
+    notify 'already pinned'
+  end
 end
 
--- List pinned comments for this repo.
--- <CR> open file at line · o open thread in octo · dd unpin
+function M.unpin_at_cursor()
+  local e = comment_at_cursor()
+  if not e then
+    return
+  end
+  notify(remove_pin(e.repo, e) and 'unpinned' or 'that comment was not pinned')
+end
+
+-- Retrieve pinned comments for this repo.
+-- <CR> open file/thread · <C-o> open thread · <C-d> unpin
 function M.pins()
-  repo_slug(function(slug)
-    local actions = require 'telescope.actions'
-    pick('Pinned comments (' .. slug .. ')', load_pins(slug), open_at, {
+  current_repo(function(slug)
+    local pins = load_pins(slug)
+    if vim.tbl_isempty(pins) then
+      return notify('no pinned comments for ' .. slug)
+    end
+    pick('Pinned comments (' .. slug .. ')', pins, open_at, {
+      { lhs = '<C-o>', fn = open_thread },
       {
-        lhs = 'o',
-        fn = function(e, b)
-          actions.close(b)
-          open_thread(e)
-        end,
-      },
-      {
-        lhs = 'dd',
-        fn = function(e, b)
-          local kept = {}
-          for _, p in ipairs(load_pins(slug)) do
-            if p.url ~= e.url then
-              kept[#kept + 1] = p
-            end
-          end
-          save_pins(slug, kept)
+        lhs = '<C-d>',
+        keep = true,
+        fn = function(e, bufnr)
+          remove_pin(slug, e)
           notify 'unpinned'
-          actions.close(b)
+          require('telescope.actions').close(bufnr)
           M.pins() -- reopen, refreshed
         end,
       },
