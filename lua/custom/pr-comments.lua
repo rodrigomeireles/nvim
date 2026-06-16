@@ -79,6 +79,8 @@ local function comment_at_cursor()
     line = path and (line or 1) or nil,
     user = (comment.author ~= nil and comment.author ~= '') and comment.author or nil,
     url = b.node and b.node.url, -- PR url (octo metadata lacks a per-comment url)
+    node_id = comment.id, -- GraphQL node id; octo navigates by this
+    databaseId = comment.databaseId, -- numeric id (nil for review comments)
     pr = b.number,
     repo = b.repo,
   }
@@ -145,6 +147,8 @@ local function fetch(pr, cb)
           user = (c.user and c.user.login) or '?',
           url = c.html_url,
           diff_hunk = c.diff_hunk,
+          node_id = c.node_id,
+          databaseId = c.id,
           pr = pr.number,
         }
       end
@@ -154,6 +158,8 @@ local function fetch(pr, cb)
           body = c.body or '',
           user = (c.user and c.user.login) or '?',
           url = c.html_url,
+          node_id = c.node_id,
+          databaseId = c.id,
           pr = pr.number,
         }
       end
@@ -188,9 +194,10 @@ local function save_pins(slug, pins)
   vim.fn.writefile({ vim.json.encode(pins) }, pin_file(slug))
 end
 
--- Stable-ish identity for dedupe/removal: url, else path:line, else body.
+-- Stable identity for dedupe/removal. node_id/databaseId are per-comment; url is
+-- last (buffer-pins store the PR url, which is shared across a PR's comments).
 local function pin_key(p)
-  return p.url or (p.path and (p.path .. ':' .. tostring(p.line))) or p.body
+  return p.node_id or (p.databaseId and tostring(p.databaseId)) or p.url or (p.path and (p.path .. ':' .. tostring(p.line))) or p.body
 end
 
 local function add_pin(slug, entry)
@@ -219,17 +226,10 @@ local function remove_pin(slug, entry)
 end
 
 --------------------------------------------------------------- shared actions
-local function open_thread(e)
-  if not e.url then
-    return notify('comment has no url', vim.log.levels.WARN)
-  end
-  vim.cmd('Octo ' .. e.url) -- loads octo on demand; opens the PR/thread context
-end
-
--- Jump to the code a comment refers to; conversation comments fall back to octo.
+-- Open the source file at the comment's line (file-anchored comments only).
 local function open_at(e)
   if not e.path then
-    return open_thread(e)
+    return notify('this comment is not anchored to a file', vim.log.levels.WARN)
   end
   local p = resolve(e.path)
   if not p then
@@ -238,6 +238,39 @@ local function open_at(e)
   vim.cmd.edit(vim.fn.fnameescape(p))
   pcall(vim.api.nvim_win_set_cursor, 0, { e.line or 1, 0 })
   vim.cmd 'normal! zz'
+end
+
+-- octo fills the PR buffer asynchronously, so poll until its comments render,
+-- then use octo's own navigate_to_comment (matches by node id or numeric id).
+local function navigate_when_ready(node_id, databaseId)
+  local octo_utils = require 'octo.utils'
+  local timer = assert(vim.uv.new_timer())
+  local tries = 0
+  timer:start(80, 120, vim.schedule_wrap(function()
+    tries = tries + 1
+    local b = octo_utils.get_current_buffer()
+    if b and b.commentsMetadata and #b.commentsMetadata > 0 then
+      timer:stop()
+      timer:close()
+      b:navigate_to_comment { id = node_id, databaseId = databaseId }
+    elseif tries >= 80 then -- ~10s
+      timer:stop()
+      timer:close()
+      notify('opened the PR but could not locate the comment', vim.log.levels.WARN)
+    end
+  end))
+end
+
+-- Default action: land on the comment inside the octo PR buffer.
+local function open_in_pr(e)
+  if e.pr and (e.node_id or e.databaseId) then
+    vim.cmd('Octo pr edit ' .. e.pr)
+    return navigate_when_ready(e.node_id, e.databaseId)
+  end
+  if e.path then -- old pin without ids: best effort
+    return open_at(e)
+  end
+  notify('cannot locate this comment (re-pin it)', vim.log.levels.WARN)
 end
 
 ------------------------------------------------------------- telescope picker
@@ -319,12 +352,12 @@ end
 
 ------------------------------------------------------------------- public API
 -- List every comment on the current PR (review + conversation).
--- <CR> open file/thread · <C-y> pin · <C-o> open thread
+-- <CR> jump to comment in PR buffer · <C-o> open file at line · <C-y> pin
 function M.list()
   current_pr(function(pr)
     fetch(pr, function(comments)
       current_repo(function(slug)
-        pick('PR #' .. pr.number .. ' comments', comments, open_at, {
+        pick('PR #' .. pr.number .. ' comments', comments, open_in_pr, {
           {
             lhs = '<C-y>',
             keep = true,
@@ -332,7 +365,7 @@ function M.list()
               notify(add_pin(slug, e) and ('pinned ' .. (e.path and (e.path .. ':' .. e.line) or 'comment')) or 'already pinned')
             end,
           },
-          { lhs = '<C-o>', fn = open_thread },
+          { lhs = '<C-o>', fn = open_at },
         })
       end)
     end)
@@ -362,15 +395,15 @@ function M.unpin_at_cursor()
 end
 
 -- Retrieve pinned comments for this repo.
--- <CR> open file/thread · <C-o> open thread · <C-d> unpin
+-- <CR> jump to comment in PR buffer · <C-o> open file at line · <C-d> unpin
 function M.pins()
   current_repo(function(slug)
     local pins = load_pins(slug)
     if vim.tbl_isempty(pins) then
       return notify('no pinned comments for ' .. slug)
     end
-    pick('Pinned comments (' .. slug .. ')', pins, open_at, {
-      { lhs = '<C-o>', fn = open_thread },
+    pick('Pinned comments (' .. slug .. ')', pins, open_in_pr, {
+      { lhs = '<C-o>', fn = open_at },
       {
         lhs = '<C-d>',
         keep = true,
