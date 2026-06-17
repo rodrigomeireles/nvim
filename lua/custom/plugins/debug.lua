@@ -23,6 +23,8 @@ return {
 
 		-- Add your own debuggers here
 		'leoluz/nvim-dap-go',
+		'mfussenegger/nvim-dap-python',
+		'jbyuki/one-small-step-for-vimkind',
 	},
 	keys = {
 		-- Basic debugging keymaps, feel free to change to your liking!
@@ -95,6 +97,7 @@ return {
 			ensure_installed = {
 				-- Update this to ensure that you have the debuggers for the langs you want
 				'delve',
+				'python',
 			},
 		}
 
@@ -144,5 +147,29 @@ return {
 				detached = vim.fn.has 'win32' == 0,
 			},
 		}
+
+		require('dap-python').setup(vim.fn.executable 'uv' == 1 and 'uv' or 'python')
+
+		dap.adapters.nlua = function(callback, config)
+			callback {
+				type = 'server',
+				host = config.host or '127.0.0.1',
+				port = config.port or 8086,
+			}
+		end
+
+		dap.configurations.lua = {
+			{
+				type = 'nlua',
+				request = 'attach',
+				name = 'Attach to running Neovim instance',
+				host = '127.0.0.1',
+				port = 8086,
+			},
+		}
+
+		vim.api.nvim_create_user_command('DapLuaLaunch', function()
+			require('osv').launch { port = 8086 }
+		end, { desc = 'Start one-small-step-for-vimkind on port 8086' })
 	end,
 }

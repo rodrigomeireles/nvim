@@ -42,6 +42,7 @@ P.S. You can delete this when you're done too. It's your config now :)
 --  NOTE: Must happen before plugins are required (otherwise wrong leader will be used)
 vim.g.mapleader = ' '
 vim.g.maplocalleader = ' '
+vim.g.have_nerd_font = true
 
 vim.filetype.add({
   extension = {
@@ -197,8 +198,13 @@ require('lazy').setup({
         'nvim-telescope/telescope-fzf-native.nvim',
         -- NOTE: If you are having trouble with this installation,
         --       refer to the README for telescope-fzf-native for more instructions.
-        build = 'make',
+        build = vim.fn.has 'win32' == 1
+            and 'cmake -S. -Bbuild -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release && cmake --install build --prefix build'
+          or 'make',
         cond = function()
+          if vim.fn.has 'win32' == 1 then
+            return vim.fn.executable 'cmake' == 1
+          end
           return vim.fn.executable 'make' == 1
         end,
       },
@@ -224,7 +230,6 @@ require('lazy').setup({
   --       These are some example plugins that I've included in the kickstart repository.
   --       Uncomment any of the lines below to enable them.
   require 'kickstart.plugins.autoformat',
-  require 'kickstart.plugins.debug',
   {
     "iamcco/markdown-preview.nvim",
     cmd = { "MarkdownPreviewToggle", "MarkdownPreview", "MarkdownPreviewStop" },
@@ -377,7 +382,7 @@ vim.keymap.set('n', '<leader>sr', require('telescope.builtin').resume, { desc = 
 -- The new plugin only installs parsers; highlight/indent are Neovim built-ins.
 local ts_parsers = {
   'c', 'cpp', 'go', 'lua', 'python', 'rust', 'tsx', 'javascript', 'typescript',
-  'vimdoc', 'vim', 'bash', 'templ', 'nu', 'markdown', 'markdown_inline',
+  'vimdoc', 'vim', 'bash', 'templ', 'nu', 'gdscript', 'markdown', 'markdown_inline',
 }
 do
   local installed = require('nvim-treesitter.config').get_installed()
@@ -578,10 +583,8 @@ end
 --   ['<leader>w'] = { name = '[W]orkspace', _ = 'which_key_ignore' },
 -- }
 
--- mason-lspconfig requires that these setup functions are called in this order
--- before setting up the servers.
 require('mason').setup()
-require('mason-lspconfig').setup()
+local mason_lspconfig = require 'mason-lspconfig'
 
 -- Enable the following language servers
 --  Feel free to add/remove any LSPs that you want here. They will automatically be installed.
@@ -610,7 +613,7 @@ local servers = {
       pythonPath = '.venv/bin/python',
     },
   },
-  -- rust_analyzer = {},
+  rust_analyzer = {},
   tailwindcss = { filetypes = { 'templ', 'html', 'tsx', 'typescriptreact', 'typescript' } },
   -- JS/TS handled by typescript-tools.nvim (see setup below), not mason/lspconfig.
   -- htmx = { filetypes = { 'html', 'templ' } },
@@ -631,25 +634,30 @@ require('neodev').setup()
 local capabilities = vim.lsp.protocol.make_client_capabilities()
 capabilities = require('blink.cmp').get_lsp_capabilities(capabilities)
 
--- Ensure the servers above are installed
-local mason_lspconfig = require 'mason-lspconfig'
-
 mason_lspconfig.setup {
   ensure_installed = vim.tbl_keys(servers),
-  automatic_installation = true,
+  automatic_enable = false,
 }
 
+local function setup_lsp(server_name, config)
+  config = vim.deepcopy(config or {})
+  local filetypes = config.filetypes
+  config.filetypes = nil
 
-mason_lspconfig.setup_handlers {
-  function(server_name)
-    require('lspconfig')[server_name].setup {
-      capabilities = capabilities,
-      on_attach = on_attach,
-      settings = servers[server_name],
-      filetypes = (servers[server_name] or {}).filetypes,
-    }
-  end,
-}
+  vim.lsp.config(server_name, {
+    capabilities = capabilities,
+    on_attach = on_attach,
+    settings = config,
+    filetypes = filetypes,
+  })
+  vim.lsp.enable(server_name)
+end
+
+setup_lsp('gdscript')
+
+for server_name, config in pairs(servers) do
+  setup_lsp(server_name, config)
+end
 
 -- TypeScript / JavaScript LSP via typescript-tools.nvim.
 -- It's not a mason/lspconfig server, so it's configured separately here, but
@@ -659,7 +667,9 @@ require('typescript-tools').setup {
   capabilities = capabilities,
 }
 
-vim.env.python3_host_prog = '/home/rmo/.pyenv/versions/nvim311/bin/python'
+if vim.fn.has 'win32' == 0 then
+  vim.g.python3_host_prog = '/home/rmo/.pyenv/versions/nvim311/bin/python'
+end
 vim.bo.tabstop = 4      -- size of a hard tabstop (ts).
 vim.bo.shiftwidth = 4   -- size of an indentation (sw).
 vim.bo.expandtab = true -- always uses spaces instead of tab characters (et).
