@@ -234,7 +234,9 @@ require('lazy').setup({
     "iamcco/markdown-preview.nvim",
     cmd = { "MarkdownPreviewToggle", "MarkdownPreview", "MarkdownPreviewStop" },
     ft = { "markdown" },
-    build = function() vim.fn["mkdp#util#install"]() end,
+    -- Lazy's build callback must wait for the prebuilt preview server to finish
+    -- installing. The asynchronous installer can return before the download does.
+    build = function() vim.fn["mkdp#util#install_sync"](true) end,
     init = function()
       vim.g.mkdp_markdown_css = vim.fn.stdpath("config") .. "/markdown-preview.css"
     end,
