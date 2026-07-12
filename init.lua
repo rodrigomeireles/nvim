@@ -43,6 +43,9 @@ P.S. You can delete this when you're done too. It's your config now :)
 vim.g.mapleader = ' '
 vim.g.maplocalleader = ' '
 vim.g.have_nerd_font = true
+if vim.fn.has 'win32' == 1 and (vim.env.HOME == nil or vim.env.HOME == '') then
+  vim.env.HOME = vim.env.USERPROFILE
+end
 
 vim.filetype.add({
   extension = {
@@ -199,8 +202,9 @@ require('lazy').setup({
         -- NOTE: If you are having trouble with this installation,
         --       refer to the README for telescope-fzf-native for more instructions.
         build = vim.fn.has 'win32' == 1
-            and 'cmake -S. -Bbuild -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release && cmake --install build --prefix build'
-          or 'make',
+            and
+            'cmake -S. -Bbuild -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release && cmake --install build --prefix build'
+            or 'make',
         cond = function()
           if vim.fn.has 'win32' == 1 then
             return vim.fn.executable 'cmake' == 1
@@ -255,11 +259,23 @@ require('lazy').setup({
     opts = {},
     -- stylua: ignore
     keys = {
-      { "s",     mode = { "n", "x", "o" }, function() require("flash").jump() end,              desc = "Flash" },
-      { "S",     mode = { "n", "x", "o" }, function() require("flash").treesitter() end,        desc = "Flash Treesitter" },
-      { "r",     mode = "o",               function() require("flash").remote() end,            desc = "Remote Flash" },
-      { "R",     mode = { "o", "x" },      function() require("flash").treesitter_search() end, desc = "Treesitter Search" },
-      { "<c-s>", mode = { "c" },           function() require("flash").toggle() end,            desc = "Toggle Flash Search" },
+      { "s", mode = { "n", "x", "o" }, function() require("flash").jump() end,       desc = "Flash" },
+      { "S", mode = { "n", "x", "o" }, function() require("flash").treesitter() end, desc = "Flash Treesitter" },
+      { "r", mode = "o",               function() require("flash").remote() end,     desc = "Remote Flash" },
+      {
+        "R",
+        mode = { "o", "x" },
+        function() require("flash").treesitter_search() end,
+        desc =
+        "Treesitter Search"
+      },
+      {
+        "<c-s>",
+        mode = { "c" },
+        function() require("flash").toggle() end,
+        desc =
+        "Toggle Flash Search"
+      },
     },
   },
 
@@ -314,6 +330,10 @@ vim.o.completeopt = 'menuone,noselect'
 
 -- NOTE: You should make sure your terminal supports this
 vim.o.termguicolors = true
+
+-- `:!` output is not a terminal emulator, so xmake ANSI color codes show up
+-- literally as `^[[...m`. Keep xmake plain for commands spawned by Neovim.
+vim.env.XMAKE_COLORTERM = 'nocolor'
 
 vim.o.rnu = true
 
@@ -389,8 +409,8 @@ local ts_parsers = {
 do
   local installed = require('nvim-treesitter.config').get_installed()
   local missing = vim.iter(ts_parsers)
-    :filter(function(p) return not vim.tbl_contains(installed, p) end)
-    :totable()
+      :filter(function(p) return not vim.tbl_contains(installed, p) end)
+      :totable()
   if #missing > 0 then
     require('nvim-treesitter').install(missing)
   end
@@ -433,7 +453,7 @@ for lhs, spec in pairs {
   [']m'] = { 'goto_next_start', '@function.outer' },
   [']]'] = { 'goto_next_start', '@class.outer' },
   [']M'] = { 'goto_next_end', '@function.outer' },
-  ['][' ] = { 'goto_next_end', '@class.outer' },
+  [']['] = { 'goto_next_end', '@class.outer' },
   ['[m'] = { 'goto_previous_start', '@function.outer' },
   ['[['] = { 'goto_previous_start', '@class.outer' },
   ['[M'] = { 'goto_previous_end', '@function.outer' },
@@ -492,10 +512,10 @@ local function pydoc_float(symbol, py)
 end
 
 local function smart_hover()
-  if vim.bo.filetype ~= 'python' then
+  local bufnr = vim.api.nvim_get_current_buf()
+  if vim.bo[bufnr].filetype ~= 'python' then
     return vim.lsp.buf.hover()
   end
-  local bufnr = vim.api.nvim_get_current_buf()
   local pos = vim.api.nvim_win_get_cursor(0)
   local params = {
     textDocument = { uri = vim.uri_from_bufnr(bufnr) },
@@ -529,7 +549,7 @@ local function smart_hover()
   vim.lsp.buf.hover() -- nothing better to offer -> normal LSP float
 end
 
-local on_attach = function(_, bufnr)
+local on_attach = function(client, bufnr)
   -- NOTE: Remember that lua is a real programming language, and as such it is possible
   -- to define small helper and utility functions so you don't have to repeat yourself
   -- many times.
@@ -557,8 +577,20 @@ local on_attach = function(_, bufnr)
   nmap('<leader>ws', require('telescope.builtin').lsp_dynamic_workspace_symbols, '[W]orkspace [S]ymbols')
 
   -- See `:help K` for why this keymap
-  nmap('K', smart_hover, 'Hover Documentation (pydoc fallback for torch)')
+  if vim.bo[bufnr].filetype == 'python' then
+    nmap('K', smart_hover, 'Hover Documentation (pydoc fallback for torch)')
+  else
+    nmap('K', vim.lsp.buf.hover, 'Hover Documentation')
+  end
   nmap('<C-k>', vim.lsp.buf.signature_help, 'Signature Documentation')
+
+  if client.name == 'clangd' and client:supports_method 'textDocument/inlayHint' then
+    vim.lsp.inlay_hint.enable(true, { bufnr = bufnr })
+    nmap('<leader>th', function()
+      local enabled = vim.lsp.inlay_hint.is_enabled { bufnr = bufnr }
+      vim.lsp.inlay_hint.enable(not enabled, { bufnr = bufnr })
+    end, 'Toggle Inlay Hints')
+  end
 
   -- Lesser used LSP functionality
   nmap('gD', vim.lsp.buf.declaration, '[G]oto [D]eclaration')
@@ -588,17 +620,38 @@ end
 require('mason').setup()
 local mason_lspconfig = require 'mason-lspconfig'
 
+local clangd_cmd = {
+  'clangd',
+  '--background-index',
+  '--clang-tidy',
+  '--all-scopes-completion',
+  '--completion-style=detailed',
+  '--function-arg-placeholders=1',
+  '--header-insertion=iwyu',
+  '--header-insertion-decorators',
+  '--enable-config',
+  '--pch-storage=memory',
+}
+if vim.fn.has 'win32' == 1 then
+  local mason_clangd = vim.fn.stdpath 'data' .. '/mason/bin/clangd.cmd'
+  if vim.fn.executable(mason_clangd) == 1 then
+    clangd_cmd[1] = mason_clangd
+  end
+end
+
 -- Enable the following language servers
 --  Feel free to add/remove any LSPs that you want here. They will automatically be installed.
 --
---  Add any additional override configuration in the following tables. They will be passed to
---  the `settings` field of the server config. You must look up that documentation yourself.
+--  Add any additional override configuration in the following tables. Plain keys become
+--  `settings`; LSP config keys like `cmd`, `filetypes`, and `init_options` are passed through.
 --
 --  If you want to override the default filetypes that your language server will attach to you can
 --  define the property 'filetypes' to the map in question.
 --
 local servers = {
-  -- clangd = {},
+  clangd = {
+    cmd = clangd_cmd,
+  },
   gopls = {
     -- gopls reads its options from the `gopls` settings section, so the
     -- table must be nested (mirrors lua_ls/pyright using `Lua`/`python`).
@@ -626,6 +679,7 @@ local servers = {
       workspace = { checkThirdParty = false },
       telemetry = { enable = false },
     },
+    gdscript = {},
   },
 }
 
@@ -643,19 +697,39 @@ mason_lspconfig.setup {
 
 local function setup_lsp(server_name, config)
   config = vim.deepcopy(config or {})
-  local filetypes = config.filetypes
-  config.filetypes = nil
-
-  vim.lsp.config(server_name, {
+  local lsp_config = {
     capabilities = capabilities,
     on_attach = on_attach,
-    settings = config,
-    filetypes = filetypes,
-  })
+  }
+
+  for _, key in ipairs {
+    'cmd',
+    'filetypes',
+    'root_dir',
+    'root_markers',
+    'single_file_support',
+    'init_options',
+    'on_init',
+    'handlers',
+    'flags',
+    'get_language_id',
+  } do
+    if config[key] ~= nil then
+      lsp_config[key] = config[key]
+      config[key] = nil
+    end
+  end
+
+  if config.settings ~= nil then
+    lsp_config.settings = config.settings
+    config.settings = nil
+  else
+    lsp_config.settings = config
+  end
+
+  vim.lsp.config(server_name, lsp_config)
   vim.lsp.enable(server_name)
 end
-
-setup_lsp('gdscript')
 
 for server_name, config in pairs(servers) do
   setup_lsp(server_name, config)
