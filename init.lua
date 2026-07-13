@@ -657,6 +657,19 @@ mason_lspconfig.setup_handlers {
 require('typescript-tools').setup {
   on_attach = on_attach,
   capabilities = capabilities,
+  -- Don't start tsserver for non-file buffers. octo's PR-review diffs are named
+  -- `octo://…` (fugitive/diffview use their own URI schemes too) and get a
+  -- `typescript` filetype, which would otherwise autostart a client; tsserver
+  -- can't serve a buffer that isn't on disk and TsserverProvider asserts on
+  -- exactly this (bufname_valid → "Invalid buffer name!"). Guard mirrors the
+  -- plugin's own default root_dir, but bails before the client is spawned.
+  root_dir = function(bufnr, on_dir)
+    local tsutil = require 'typescript-tools.utils'
+    if not tsutil.bufname_valid(vim.api.nvim_buf_get_name(bufnr)) then
+      return -- never calling on_dir → no client for this buffer
+    end
+    on_dir(tsutil.get_root_dir(bufnr))
+  end,
 }
 
 vim.env.python3_host_prog = '/home/rmo/.pyenv/versions/nvim311/bin/python'
