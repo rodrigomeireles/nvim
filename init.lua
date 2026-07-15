@@ -639,8 +639,48 @@ if vim.fn.has 'win32' == 1 then
   end
 end
 
+local function templ_root_dir(bufnr, on_dir)
+  local root = vim.fs.root(bufnr, 'go.mod')
+  if root then
+    on_dir(root)
+  end
+end
+
+local function templ_lsp_env(config)
+  local env = config.cmd_env and vim.deepcopy(config.cmd_env) or nil
+  local gopls_dir = vim.fn.stdpath 'data' .. '/mason/packages/gopls'
+  local gopls_bin = gopls_dir .. (vim.fn.has 'win32' == 1 and '/gopls.exe' or '/gopls')
+
+  if vim.fn.executable(gopls_bin) == 1 then
+    env = env or {}
+    local path_sep = vim.fn.has 'win32' == 1 and ';' or ':'
+    env.PATH = gopls_dir .. path_sep .. (env.PATH or vim.env.PATH or '')
+  end
+
+  return env
+end
+
+local function templ_lsp_cmd(dispatchers, config)
+  return vim.lsp.rpc.start({ 'go', 'tool', 'templ', 'lsp' }, dispatchers, {
+    cwd = config.root_dir or vim.uv.cwd(),
+    env = templ_lsp_env(config),
+    detached = config.detached,
+  })
+end
+
+-- Mason's htmx-lsp 0.1.0 never answers empty requests. This pinned upstream
+-- build includes the Neovim multi-server fix from htmx-lsp#62.
+local htmx_cmd = { 'htmx-lsp' }
+local htmx_lsp_bin = vim.fn.stdpath 'data'
+  .. '/tools/htmx-lsp-a05bf01/bin/htmx-lsp'
+  .. (vim.fn.has 'win32' == 1 and '.exe' or '')
+if vim.fn.executable(htmx_lsp_bin) == 1 then
+  htmx_cmd[1] = htmx_lsp_bin
+end
+
 -- Enable the following language servers
---  Feel free to add/remove any LSPs that you want here. They will automatically be installed.
+--  Feel free to add/remove any LSPs that you want here. Most entries are installed by Mason below;
+--  project-managed servers, like templ, can be filtered out of Mason's install list.
 --
 --  Add any additional override configuration in the following tables. Plain keys become
 --  `settings`; LSP config keys like `cmd`, `filetypes`, and `init_options` are passed through.
@@ -659,7 +699,12 @@ local servers = {
       usePlaceholders = true,
     },
   },
-  -- templ = {},
+  templ = {
+    -- Use the templ version pinned by the current Go module's tool directive.
+    cmd = templ_lsp_cmd,
+    filetypes = { 'templ' },
+    root_dir = templ_root_dir,
+  },
   ruff = {},
   pyright = {
     python = {
@@ -671,7 +716,7 @@ local servers = {
   rust_analyzer = {},
   tailwindcss = { filetypes = { 'templ', 'html', 'tsx', 'typescriptreact', 'typescript' } },
   -- JS/TS handled by typescript-tools.nvim (see setup below), not mason/lspconfig.
-  -- htmx = { filetypes = { 'html', 'templ' } },
+  htmx = { cmd = htmx_cmd, filetypes = { 'templ' } },
   html = { filetypes = { 'html', 'twig', 'hbs', 'templ' } },
 
   lua_ls = {
@@ -690,8 +735,12 @@ require('neodev').setup()
 local capabilities = vim.lsp.protocol.make_client_capabilities()
 capabilities = require('blink.cmp').get_lsp_capabilities(capabilities)
 
+local mason_servers = vim.tbl_filter(function(server_name)
+  return server_name ~= 'templ' and server_name ~= 'htmx'
+end, vim.tbl_keys(servers))
+
 mason_lspconfig.setup {
-  ensure_installed = vim.tbl_keys(servers),
+  ensure_installed = mason_servers,
   automatic_enable = false,
 }
 

@@ -38,6 +38,15 @@ return {
 		-- elsewhere in your config, without redefining it, via `opts_extend`
 		sources = {
 			default = { 'lsp', 'path', 'snippets', 'buffer' },
+			providers = {
+				snippets = {
+					opts = {
+						extended_filetypes = {
+							templ = { 'html', 'go' },
+						},
+					},
+				},
+			},
 			-- optionally disable cmdline completions
 			-- cmdline = {},
 		},
