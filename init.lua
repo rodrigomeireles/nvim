@@ -404,7 +404,7 @@ vim.keymap.set('n', '<leader>sr', require('telescope.builtin').resume, { desc = 
 -- The new plugin only installs parsers; highlight/indent are Neovim built-ins.
 local ts_parsers = {
   'c', 'cpp', 'go', 'lua', 'python', 'rust', 'tsx', 'javascript', 'typescript',
-  'vimdoc', 'vim', 'bash', 'templ', 'nu', 'gdscript', 'markdown', 'markdown_inline',
+  'vimdoc', 'vim', 'bash', 'templ', 'html', 'nu', 'gdscript', 'markdown', 'markdown_inline',
 }
 do
   local installed = require('nvim-treesitter.config').get_installed()
@@ -480,19 +480,78 @@ vim.keymap.set('n', '<leader>q', vim.diagnostic.setloclist, { desc = 'Open diagn
 -- `smart_hover` does a normal LSP hover, but when it spots that degraded stub doc
 -- it redirects to the real runtime doc via `python -m pydoc`, run through the
 -- project's own interpreter (so torch is importable).
+local function path_join(...)
+  local path = table.concat({ ... }, '/')
+  return vim.fs and vim.fs.normalize(path) or path
+end
+
+local function is_absolute_path(path)
+  return path:match '^/' or path:match '^\\' or path:match '^%a:[/\\]'
+end
+
+local function add_venv_python_candidates(candidates, venv_dir)
+  if not venv_dir or venv_dir == '' then
+    return
+  end
+  table.insert(candidates, path_join(venv_dir, 'Scripts', 'python.exe'))
+  table.insert(candidates, path_join(venv_dir, 'Scripts', 'python'))
+  table.insert(candidates, path_join(venv_dir, 'bin', 'python'))
+  table.insert(candidates, path_join(venv_dir, 'bin', 'python3'))
+end
+
+local function first_executable(paths)
+  for _, path in ipairs(paths) do
+    if path and path ~= '' and vim.fn.executable(path) == 1 then
+      return path
+    end
+  end
+end
+
+local function find_project_python(root_dir)
+  root_dir = root_dir or vim.fn.getcwd()
+
+  local candidates = {}
+  add_venv_python_candidates(candidates, path_join(root_dir, '.venv'))
+  add_venv_python_candidates(candidates, vim.env.VIRTUAL_ENV)
+
+  return first_executable(candidates)
+end
+
+local function fallback_python()
+  return first_executable { 'python', 'python3' } or 'python'
+end
+
+local function python_lsp_settings(root_dir)
+  local settings = {}
+  local python = find_project_python(root_dir)
+
+  if root_dir and vim.fn.isdirectory(path_join(root_dir, '.venv')) == 1 then
+    settings.venvPath = root_dir
+    settings.venv = '.venv'
+  end
+
+  if python then
+    settings.defaultInterpreterPath = python
+    settings.pythonPath = python
+  end
+
+  return settings
+end
+
 local function project_python(bufnr)
   for _, c in ipairs(vim.lsp.get_clients { bufnr = bufnr, name = 'pyright' }) do
-    local pp = vim.tbl_get(c, 'config', 'settings', 'python', 'pythonPath')
+    local pp = vim.tbl_get(c, 'config', 'settings', 'python', 'defaultInterpreterPath')
+      or vim.tbl_get(c, 'config', 'settings', 'python', 'pythonPath')
     if pp then
       local root = c.config.root_dir or vim.fn.getcwd()
-      local abs = pp:sub(1, 1) == '/' and pp or (root .. '/' .. pp)
+      local abs = is_absolute_path(pp) and pp or path_join(root, pp)
       if vim.fn.executable(abs) == 1 then
         return abs
       end
     end
   end
-  local venv = vim.fn.getcwd() .. '/.venv/bin/python'
-  return vim.fn.executable(venv) == 1 and venv or 'python3'
+
+  return find_project_python(vim.fn.getcwd()) or fallback_python()
 end
 
 local function pydoc_float(symbol, py)
@@ -707,11 +766,15 @@ local servers = {
   },
   ruff = {},
   pyright = {
-    python = {
-      venvPath = '.',
-      venv = '.venv',
-      pythonPath = '.venv/bin/python',
-    },
+    before_init = function(_, config)
+      config.settings = config.settings or {}
+      config.settings.python = vim.tbl_deep_extend(
+        'force',
+        config.settings.python or {},
+        python_lsp_settings(config.root_dir)
+      )
+    end,
+    python = {},
   },
   rust_analyzer = {},
   tailwindcss = { filetypes = { 'templ', 'html', 'tsx', 'typescriptreact', 'typescript' } },
@@ -746,9 +809,16 @@ mason_lspconfig.setup {
 
 local function setup_lsp(server_name, config)
   config = vim.deepcopy(config or {})
+  -- Preserve server-specific hooks, such as rust-analyzer's LspCargoReload.
+  local default_on_attach = vim.lsp.config[server_name].on_attach
   local lsp_config = {
     capabilities = capabilities,
-    on_attach = on_attach,
+    on_attach = function(client, bufnr)
+      if default_on_attach then
+        default_on_attach(client, bufnr)
+      end
+      on_attach(client, bufnr)
+    end,
   }
 
   for _, key in ipairs {
@@ -758,6 +828,7 @@ local function setup_lsp(server_name, config)
     'root_markers',
     'single_file_support',
     'init_options',
+    'before_init',
     'on_init',
     'handlers',
     'flags',
@@ -780,8 +851,57 @@ local function setup_lsp(server_name, config)
   vim.lsp.enable(server_name)
 end
 
+-- rust-analyzer tracks Rust/Cargo closely. `ensure_installed` installs a missing
+-- server, but it does not upgrade an existing one; wait for Mason to replace a
+-- stale analyzer before enabling it so an old process cannot grab the buffer.
+local function setup_rust_analyzer(config)
+  local ok, registry = pcall(require, 'mason-registry')
+  local package_ok, package = false, nil
+  if ok then
+    package_ok, package = pcall(registry.get_package, 'rust-analyzer')
+  end
+
+  if not package_ok or not package:is_installed() or package:is_installing() then
+    setup_lsp('rust_analyzer', config)
+    return
+  end
+
+  local installed_version = package:get_installed_version()
+  local latest_version = package:get_latest_version()
+  local is_headless = vim.tbl_contains(vim.v.argv, '--headless')
+  if installed_version == latest_version or is_headless then
+    setup_lsp('rust_analyzer', config)
+    return
+  end
+
+  vim.notify(
+    ('Updating rust-analyzer %s -> %s before starting the Rust LSP'):format(installed_version, latest_version),
+    vim.log.levels.INFO,
+    { title = 'Mason' }
+  )
+
+  package:install({ version = latest_version }, function(success, err)
+    vim.schedule(function()
+      if success then
+        vim.notify('rust-analyzer updated; starting the Rust LSP', vim.log.levels.INFO, { title = 'Mason' })
+      else
+        vim.notify(
+          'rust-analyzer update failed; starting the installed version: ' .. tostring(err),
+          vim.log.levels.ERROR,
+          { title = 'Mason' }
+        )
+      end
+      setup_lsp('rust_analyzer', config)
+    end)
+  end)
+end
+
 for server_name, config in pairs(servers) do
-  setup_lsp(server_name, config)
+  if server_name == 'rust_analyzer' then
+    setup_rust_analyzer(config)
+  else
+    setup_lsp(server_name, config)
+  end
 end
 
 -- TypeScript / JavaScript LSP via typescript-tools.nvim.
