@@ -11,9 +11,15 @@ return {
     'nvim-telescope/telescope.nvim',
     'nvim-tree/nvim-web-devicons', -- file-panel icons
   },
-  cmd = 'Octo', -- lazy-load octo on first :Octo
+  cmd = 'Octo',                    -- lazy-load octo on first :Octo
   opts = {
-    picker = 'telescope', -- reuse the telescope setup used everywhere else
+    picker = 'telescope',          -- reuse the telescope setup used everywhere else
+    reviews = {
+      -- Don't hijack the opposite diff pane with the comment-thread view every
+      -- time the cursor crosses a commented line; open threads on demand with
+      -- `:Octo review thread` (q closes them) instead.
+      auto_show_threads = false,
+    },
     mappings = {
       -- octo deep-merges mappings over its defaults, so these partial overrides
       -- keep every other default (react/reply/resolve, ]t/[t, etc.) intact.
@@ -61,8 +67,10 @@ return {
       pattern = 'octo',
       desc = 'PR pin/unpin maps in octo buffers',
       callback = function(ev)
-        vim.keymap.set('n', '<leader>pp', pr 'pin_at_cursor', { buffer = ev.buf, desc = 'PR: [p]in comment under cursor' })
-        vim.keymap.set('n', '<leader>pP', pr 'unpin_at_cursor', { buffer = ev.buf, desc = 'PR: un[P]in comment under cursor' })
+        vim.keymap.set('n', '<leader>pp', pr 'pin_at_cursor',
+          { buffer = ev.buf, desc = 'PR: [p]in comment under cursor' })
+        vim.keymap.set('n', '<leader>pP', pr 'unpin_at_cursor',
+          { buffer = ev.buf, desc = 'PR: un[P]in comment under cursor' })
       end,
     })
 

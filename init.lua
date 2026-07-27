@@ -378,6 +378,7 @@ vim.keymap.set('n', '<leader>sr', require('telescope.builtin').resume, { desc = 
 local ts_parsers = {
   'c', 'cpp', 'go', 'lua', 'python', 'rust', 'tsx', 'javascript', 'typescript',
   'vimdoc', 'vim', 'bash', 'templ', 'nu', 'markdown', 'markdown_inline',
+  'html', 'css',
 }
 do
   local installed = require('nvim-treesitter.config').get_installed()
@@ -542,7 +543,27 @@ local on_attach = function(_, bufnr)
   nmap('<leader>rn', vim.lsp.buf.rename, '[R]e[n]ame')
   nmap('<leader>ca', vim.lsp.buf.code_action, '[C]ode [A]ction')
 
-  nmap('gd', require('telescope.builtin').lsp_definitions, '[G]oto [D]efinition')
+  -- tsgo (and some other servers) report several locations for one symbol
+  -- (e.g. a class and its constructor), which turns the old direct jump into
+  -- a two-entry picker. Jump straight to the first location when they're all
+  -- in the same file (the full list stays in the quickfix); picker otherwise.
+  nmap('gd', function()
+    vim.lsp.buf.definition {
+      on_list = function(opts)
+        local items = opts.items or {}
+        if #items == 0 then
+          return
+        end
+        for _, item in ipairs(items) do
+          if item.filename ~= items[1].filename then
+            return require('telescope.builtin').lsp_definitions()
+          end
+        end
+        vim.fn.setqflist({}, ' ', opts)
+        vim.cmd 'silent cfirst'
+      end,
+    }
+  end, '[G]oto [D]efinition')
   nmap('gr', require('telescope.builtin').lsp_references, '[G]oto [R]eferences')
   nmap('gI', require('telescope.builtin').lsp_implementations, '[G]oto [I]mplementation')
   nmap('<leader>D', require('telescope.builtin').lsp_type_definitions, 'Type [D]efinition')
@@ -566,6 +587,89 @@ local on_attach = function(_, bufnr)
     vim.lsp.buf.format()
   end, { desc = 'Format current buffer with LSP' })
 end
+
+-- Hover docs mention symbols that carry no position info (return types,
+-- parameter types, …), so no server can jump to them directly from the
+-- float. Instead, gd inside a hover float does what you'd do by hand: go to
+-- the definition of the symbol that was hovered, locate the word there
+-- (e.g. `props?: BucketProps` in the constructor signature), and go to
+-- definition again from that exact spot. open_floating_preview tags every
+-- float window with w:lsp_floating_bufnr, so this covers all servers (and
+-- the pydoc/signature floats).
+
+-- LSP definition results may be Location, Location[] or LocationLink[].
+local function first_location(result)
+  if not result then
+    return nil
+  end
+  return (result.uri or result.targetUri) and result or result[1]
+end
+
+local function float_goto_definition(float_win, src_buf)
+  local word = vim.fn.expand '<cword>'
+  vim.api.nvim_win_close(float_win, true)
+  if vim.api.nvim_get_current_buf() ~= src_buf then
+    local src_win = vim.fn.win_findbuf(src_buf)[1]
+    if not src_win then
+      return
+    end
+    vim.api.nvim_set_current_win(src_win)
+  end
+  local client = vim.lsp.get_clients({ bufnr = src_buf, method = 'textDocument/definition' })[1]
+  if not client then
+    return
+  end
+
+  -- hop 1: definition of the hovered symbol (source cursor hasn't moved)
+  local params = vim.lsp.util.make_position_params(0, client.offset_encoding)
+  local resp = client:request_sync('textDocument/definition', params, 3000, src_buf) or {}
+  local target = first_location(resp.result)
+  if not target then
+    return vim.notify('hover gd: no definition for the hovered symbol', vim.log.levels.WARN)
+  end
+  local uri = target.uri or target.targetUri
+  local target_buf = vim.uri_to_bufnr(uri)
+  vim.fn.bufload(target_buf)
+  vim.lsp.buf_attach_client(target_buf, client.id)
+
+  -- hop 2: find the word in the definition's file and resolve it from there.
+  -- Any occurrence works (imports/usages resolve to the same declaration);
+  -- try a few in case the first sits somewhere inert like a comment.
+  local pattern = '%f[%w_]' .. vim.pesc(word) .. '%f[^%w_]'
+  local attempts = 0
+  for row, line in ipairs(vim.api.nvim_buf_get_lines(target_buf, 0, -1, false)) do
+    local byte_col = line:find(pattern)
+    if byte_col then
+      local resp2 = client:request_sync('textDocument/definition', {
+        textDocument = { uri = uri },
+        position = { line = row - 1, character = vim.str_utfindex(line, client.offset_encoding, byte_col - 1) },
+      }, 3000, src_buf) or {}
+      local def = first_location(resp2.result)
+      if def then
+        return vim.lsp.util.show_document(def, client.offset_encoding, { focus = true })
+      end
+      attempts = attempts + 1
+      if attempts >= 5 then
+        break
+      end
+    end
+  end
+  vim.notify(('hover gd: could not resolve %q via %s'):format(word, vim.fs.basename(vim.uri_to_fname(uri))), vim.log.levels.WARN)
+end
+
+vim.api.nvim_create_autocmd('WinEnter', {
+  group = vim.api.nvim_create_augroup('lsp-float-gd', { clear = true }),
+  callback = function()
+    local float_win = vim.api.nvim_get_current_win()
+    local src_buf = vim.w[float_win].lsp_floating_bufnr
+    if not src_buf then
+      return -- not an LSP floating preview
+    end
+    vim.keymap.set('n', 'gd', function()
+      float_goto_definition(float_win, src_buf)
+    end, { buffer = vim.api.nvim_win_get_buf(float_win), desc = 'LSP: [G]oto [D]efinition of symbol in hover doc' })
+  end,
+})
 
 -- -- document existing key chains
 -- require('which-key').register {
@@ -610,7 +714,7 @@ local servers = {
       pythonPath = '.venv/bin/python',
     },
   },
-  -- rust_analyzer = {},
+  rust_analyzer = {},
   tailwindcss = { filetypes = { 'templ', 'html', 'tsx', 'typescriptreact', 'typescript' } },
   -- JS/TS handled by typescript-tools.nvim (see setup below), not mason/lspconfig.
   -- htmx = { filetypes = { 'html', 'templ' } },
@@ -651,9 +755,24 @@ mason_lspconfig.setup_handlers {
   end,
 }
 
--- TypeScript / JavaScript LSP via typescript-tools.nvim.
--- It's not a mason/lspconfig server, so it's configured separately here, but
--- with the same on_attach + capabilities as every other server.
+-- TypeScript / JavaScript LSP.
+-- Projects on TypeScript <= 5 use typescript-tools.nvim (tsserver protocol).
+-- TypeScript 7 (the Go-native compiler) dropped lib/tsserver.js entirely, so
+-- typescript-tools can't drive it; those projects instead get the LSP server
+-- built into the native `tsc` binary (`tsc --lsp --stdio`, autocmd below).
+-- typescript-tools is not a mason/lspconfig server, so it's configured
+-- separately here, but with the same on_attach + capabilities as the rest.
+
+-- First `node_modules/typescript` found walking up from `path`, or nil.
+local function find_local_typescript(path)
+  for dir in vim.fs.parents(path) do
+    local pkg = dir .. '/node_modules/typescript'
+    if vim.uv.fs_stat(pkg) then
+      return pkg
+    end
+  end
+end
+
 require('typescript-tools').setup {
   on_attach = on_attach,
   capabilities = capabilities,
@@ -665,12 +784,51 @@ require('typescript-tools').setup {
   -- plugin's own default root_dir, but bails before the client is spawned.
   root_dir = function(bufnr, on_dir)
     local tsutil = require 'typescript-tools.utils'
-    if not tsutil.bufname_valid(vim.api.nvim_buf_get_name(bufnr)) then
+    local bufname = vim.api.nvim_buf_get_name(bufnr)
+    if not tsutil.bufname_valid(bufname) then
       return -- never calling on_dir → no client for this buffer
+    end
+    local ts_pkg = find_local_typescript(vim.fs.normalize(bufname))
+    if ts_pkg and not vim.uv.fs_stat(ts_pkg .. '/lib/tsserver.js') then
+      return -- TypeScript 7: no tsserver.js; handled by the tsgo autocmd below
     end
     on_dir(tsutil.get_root_dir(bufnr))
   end,
 }
+
+-- TypeScript 7 native LSP: the server built into TS 7's `tsc` binary
+-- (`tsc --lsp --stdio`). Registered like any other vim.lsp.config server;
+-- root_dir only resolves in TS 7 projects, mirroring the typescript-tools
+-- gate above, so exactly one of the two attaches per project.
+vim.lsp.config('tsgo', {
+  cmd = function(dispatchers, config)
+    -- The native executable lives in a platform-specific package next to
+    -- node_modules/typescript (resolved the same way the package's own
+    -- bin/tsc node wrapper does); fall back to that wrapper if missing.
+    local uname = vim.uv.os_uname()
+    local arch = ({ x86_64 = 'x64', aarch64 = 'arm64' })[uname.machine] or uname.machine
+    local modules = config.root_dir .. '/node_modules'
+    local exe = ('%s/@typescript/typescript-%s-%s/lib/tsc'):format(modules, uname.sysname:lower(), arch)
+    if not vim.uv.fs_stat(exe) then
+      exe = modules .. '/typescript/bin/tsc'
+    end
+    return vim.lsp.rpc.start({ exe, '--lsp', '--stdio' }, dispatchers, { cwd = config.root_dir })
+  end,
+  filetypes = { 'javascript', 'javascriptreact', 'javascript.jsx', 'typescript', 'typescriptreact', 'typescript.tsx' },
+  root_dir = function(bufnr, on_dir)
+    local bufname = vim.api.nvim_buf_get_name(bufnr)
+    if not require('typescript-tools.utils').bufname_valid(bufname) then
+      return
+    end
+    local ts_pkg = find_local_typescript(vim.fs.normalize(bufname))
+    if ts_pkg and not vim.uv.fs_stat(ts_pkg .. '/lib/tsserver.js') then
+      on_dir(vim.fs.dirname(vim.fs.dirname(ts_pkg)))
+    end
+  end,
+  on_attach = on_attach,
+  capabilities = capabilities,
+})
+vim.lsp.enable 'tsgo'
 
 vim.env.python3_host_prog = '/home/rmo/.pyenv/versions/nvim311/bin/python'
 vim.bo.tabstop = 4      -- size of a hard tabstop (ts).
