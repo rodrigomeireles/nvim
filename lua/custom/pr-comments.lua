@@ -94,7 +94,11 @@ local function gh_json(args, cb)
         cb(nil, trim(res.stderr))
       end)
     end
-    local ok, data = pcall(vim.json.decode, res.stdout)
+    -- luanil: JSON `null` decodes to nil, not vim.NIL. Without it every `x or
+    -- fallback` below silently keeps the null (vim.NIL is userdata, so truthy)
+    -- and blows up on the first concat -- e.g. `line` is null on comments whose
+    -- diff went stale, where only `original_line` is set.
+    local ok, data = pcall(vim.json.decode, res.stdout, { luanil = { object = true, array = true } })
     vim.schedule(function()
       cb((ok and type(data) == 'table') and data or nil)
     end)

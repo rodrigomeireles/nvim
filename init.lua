@@ -378,22 +378,26 @@ vim.keymap.set('n', '<leader>sr', require('telescope.builtin').resume, { desc = 
 local ts_parsers = {
   'c', 'cpp', 'go', 'lua', 'python', 'rust', 'tsx', 'javascript', 'typescript',
   'vimdoc', 'vim', 'bash', 'templ', 'nu', 'markdown', 'markdown_inline',
-  'html', 'css',
+  'html', 'css', 'json', 'csv',
 }
 do
   local installed = require('nvim-treesitter.config').get_installed()
   local missing = vim.iter(ts_parsers)
-    :filter(function(p) return not vim.tbl_contains(installed, p) end)
-    :totable()
+      :filter(function(p) return not vim.tbl_contains(installed, p) end)
+      :totable()
   if #missing > 0 then
     require('nvim-treesitter').install(missing)
   end
 end
 
 -- Enable treesitter highlighting + (experimental) indentation per filetype.
+-- csv/tsv excluded: csvview.nvim owns column alignment/highlighting there.
 vim.api.nvim_create_autocmd('FileType', {
   group = vim.api.nvim_create_augroup('treesitter-start', { clear = true }),
-  callback = function()
+  callback = function(ev)
+    if vim.tbl_contains({ 'csv', 'tsv' }, ev.match) then
+      return
+    end
     if pcall(vim.treesitter.start) then
       vim.bo.indentexpr = "v:lua.require'nvim-treesitter'.indentexpr()"
     end
@@ -427,7 +431,7 @@ for lhs, spec in pairs {
   [']m'] = { 'goto_next_start', '@function.outer' },
   [']]'] = { 'goto_next_start', '@class.outer' },
   [']M'] = { 'goto_next_end', '@function.outer' },
-  ['][' ] = { 'goto_next_end', '@class.outer' },
+  [']['] = { 'goto_next_end', '@class.outer' },
   ['[m'] = { 'goto_previous_start', '@function.outer' },
   ['[['] = { 'goto_previous_start', '@class.outer' },
   ['[M'] = { 'goto_previous_end', '@function.outer' },
@@ -454,6 +458,19 @@ vim.keymap.set('n', '<leader>q', vim.diagnostic.setloclist, { desc = 'Open diagn
 -- `smart_hover` does a normal LSP hover, but when it spots that degraded stub doc
 -- it redirects to the real runtime doc via `python -m pydoc`, run through the
 -- project's own interpreter (so torch is importable).
+
+-- Rewrites the raw RST that pyright leaves in its "markdown" (`:param x:`,
+-- `:type x:`, `\_` escapes) into real markdown lists, for every doc float.
+-- A no-op on docs that carry no RST, so the other servers are unaffected.
+require('custom.lsp-docs').setup()
+
+-- Doc floats: bordered, and narrow enough to stay readable on a wide screen.
+-- hover/signature_help stamp their own focus_id onto the table they are handed,
+-- so each call gets a fresh one rather than sharing (and cross-wiring) it.
+local function float_opts()
+  return { border = 'rounded', max_width = 90, max_height = 30 }
+end
+
 local function project_python(bufnr)
   for _, c in ipairs(vim.lsp.get_clients { bufnr = bufnr, name = 'pyright' }) do
     local pp = vim.tbl_get(c, 'config', 'settings', 'python', 'pythonPath')
@@ -487,7 +504,7 @@ end
 
 local function smart_hover()
   if vim.bo.filetype ~= 'python' then
-    return vim.lsp.buf.hover()
+    return vim.lsp.buf.hover(float_opts())
   end
   local bufnr = vim.api.nvim_get_current_buf()
   local pos = vim.api.nvim_win_get_cursor(0)
@@ -520,7 +537,7 @@ local function smart_hover()
   if target and pydoc_float(target, project_python(bufnr)) then
     return
   end
-  vim.lsp.buf.hover() -- nothing better to offer -> normal LSP float
+  vim.lsp.buf.hover(float_opts()) -- nothing better to offer -> normal LSP float
 end
 
 local on_attach = function(_, bufnr)
@@ -538,7 +555,9 @@ local on_attach = function(_, bufnr)
     vim.keymap.set('n', keys, func, { buffer = bufnr, desc = desc })
   end
 
-  vim.keymap.set({ 'i', 'v' }, '<C-k>', vim.lsp.buf.hover, { buffer = bufnr, desc = 'Open documentation in insert mode' })
+  vim.keymap.set({ 'i', 'v' }, '<C-k>', function()
+    vim.lsp.buf.hover(float_opts())
+  end, { buffer = bufnr, desc = 'Open documentation in insert mode' })
 
   nmap('<leader>rn', vim.lsp.buf.rename, '[R]e[n]ame')
   nmap('<leader>ca', vim.lsp.buf.code_action, '[C]ode [A]ction')
@@ -572,7 +591,9 @@ local on_attach = function(_, bufnr)
 
   -- See `:help K` for why this keymap
   nmap('K', smart_hover, 'Hover Documentation (pydoc fallback for torch)')
-  nmap('<C-k>', vim.lsp.buf.signature_help, 'Signature Documentation')
+  nmap('<C-k>', function()
+    vim.lsp.buf.signature_help(float_opts())
+  end, 'Signature Documentation')
 
   -- Lesser used LSP functionality
   nmap('gD', vim.lsp.buf.declaration, '[G]oto [D]eclaration')
@@ -654,7 +675,8 @@ local function float_goto_definition(float_win, src_buf)
       end
     end
   end
-  vim.notify(('hover gd: could not resolve %q via %s'):format(word, vim.fs.basename(vim.uri_to_fname(uri))), vim.log.levels.WARN)
+  vim.notify(('hover gd: could not resolve %q via %s'):format(word, vim.fs.basename(vim.uri_to_fname(uri))),
+    vim.log.levels.WARN)
 end
 
 vim.api.nvim_create_autocmd('WinEnter', {
